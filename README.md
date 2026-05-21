@@ -63,6 +63,17 @@ custom_width_height
 
 When `custom_width_height` is selected, the node uses `output_width` and `output_height`.
 
+`output_resize_mode` controls how the final image is forced into the requested size:
+
+```text
+fit_pad_white  # keep image undistorted, fit inside a white canvas
+center_crop    # fill the target size, cropping from the center
+stretch        # resize exactly, may distort the image
+none           # keep the raw API output
+```
+
+Some OpenAI-compatible gateways ignore image-edit `size` parameters. This node still sends the requested size to the API, then post-processes the returned image so the final ComfyUI output matches the requested width and height.
+
 For the API key field:
 
 ```text

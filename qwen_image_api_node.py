@@ -94,6 +94,22 @@ def _format_size(width, height, request_style):
     return f"{width}*{height}"
 
 
+def _parse_size_text(size):
+    size = (size or "").strip().lower().replace(" ", "")
+    if not size or size in {"auto", "auto_from_input"}:
+        return None
+    if "x" in size:
+        left, right = size.split("x", 1)
+    elif "*" in size:
+        left, right = size.split("*", 1)
+    else:
+        return None
+    try:
+        return _round_size(int(float(left))), _round_size(int(float(right)))
+    except ValueError:
+        return None
+
+
 def _round_size(value):
     return max(64, int(round(float(value) / 16) * 16))
 
@@ -130,6 +146,42 @@ def _size_from_ratio(request_style, aspect_ratio, long_edge, output_width, outpu
     return None
 
 
+def _target_dimensions(size, aspect_ratio, long_edge, output_width, output_height):
+    custom_size = _parse_size_text(size)
+    if custom_size:
+        return custom_size
+
+    aspect_ratio = (aspect_ratio or "auto_from_input").strip()
+    if aspect_ratio == "auto_from_input":
+        return None
+
+    ratios = {
+        "1:1 square": (1, 1),
+        "3:4 portrait": (3, 4),
+        "4:3 landscape": (4, 3),
+        "9:16 portrait": (9, 16),
+        "16:9 landscape": (16, 9),
+        "2:3 portrait": (2, 3),
+        "3:2 landscape": (3, 2),
+    }
+
+    if aspect_ratio == "custom_width_height":
+        return _round_size(output_width), _round_size(output_height)
+
+    if aspect_ratio in ratios:
+        ratio_w, ratio_h = ratios[aspect_ratio]
+        long_edge = max(64, int(long_edge or 1024))
+        if ratio_w >= ratio_h:
+            width = _round_size(long_edge)
+            height = _round_size(long_edge * ratio_h / ratio_w)
+        else:
+            height = _round_size(long_edge)
+            width = _round_size(long_edge * ratio_w / ratio_h)
+        return width, height
+
+    return None
+
+
 def _size_from_image(image, request_style, size, aspect_ratio="auto_from_input", long_edge=1024, output_width=1024, output_height=1024):
     ratio_size = _size_from_ratio(request_style, aspect_ratio, long_edge, output_width, output_height)
     if ratio_size:
@@ -151,6 +203,44 @@ def _size_from_image(image, request_style, size, aspect_ratio="auto_from_input",
     height = max(512, int(round(height * scale / 16) * 16))
 
     return _format_size(width, height, request_style)
+
+
+def _resize_output_image(image, target_size, mode):
+    if not target_size:
+        return image
+
+    target_w, target_h = target_size
+    if image.size == (target_w, target_h):
+        return image
+
+    mode = mode or "fit_pad_white"
+    image = image.convert("RGB")
+    src_w, src_h = image.size
+    if src_w <= 0 or src_h <= 0:
+        return image
+
+    if mode == "none":
+        return image
+
+    if mode == "stretch":
+        return image.resize((target_w, target_h), Image.Resampling.LANCZOS)
+
+    if mode == "center_crop":
+        scale = max(target_w / src_w, target_h / src_h)
+        new_w = max(1, int(round(src_w * scale)))
+        new_h = max(1, int(round(src_h * scale)))
+        resized = image.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        left = max(0, (new_w - target_w) // 2)
+        top = max(0, (new_h - target_h) // 2)
+        return resized.crop((left, top, left + target_w, top + target_h))
+
+    scale = min(target_w / src_w, target_h / src_h)
+    new_w = max(1, int(round(src_w * scale)))
+    new_h = max(1, int(round(src_h * scale)))
+    resized = image.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    canvas = Image.new("RGB", (target_w, target_h), (255, 255, 255))
+    canvas.paste(resized, ((target_w - new_w) // 2, (target_h - new_h) // 2))
+    return canvas
 
 
 def _extract_urls_or_b64(data):
@@ -222,6 +312,10 @@ class QwenImageEditAPI:
                 "output_long_edge": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 16}),
                 "output_width": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 16}),
                 "output_height": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 16}),
+                "output_resize_mode": (
+                    ["fit_pad_white", "center_crop", "stretch", "none"],
+                    {"default": "fit_pad_white"},
+                ),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
                 "n": ("INT", {"default": 1, "min": 1, "max": 4}),
                 "prompt_extend": ("BOOLEAN", {"default": True}),
@@ -393,6 +487,7 @@ class QwenImageEditAPI:
         output_long_edge,
         output_width,
         output_height,
+        output_resize_mode,
         seed,
         n,
         prompt_extend,
@@ -415,6 +510,7 @@ class QwenImageEditAPI:
             output_height,
         )
         seed = _normalize_seed(seed)
+        target_size = _target_dimensions(size, aspect_ratio, output_long_edge, output_width, output_height)
 
         if request_style == "openai_images_edit_multipart":
             data = self._post_openai_edit(
@@ -446,6 +542,7 @@ class QwenImageEditAPI:
             )
 
         out_images, urls = self._download_images(data, api_url, timeout)
+        out_images = [_resize_output_image(img, target_size, output_resize_mode) for img in out_images]
         tensors = [_pil_to_tensor(img) for img in out_images]
         if len(tensors) == 1:
             return (tensors[0], "\n".join(urls))
