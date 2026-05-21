@@ -88,7 +88,53 @@ def _force_openai_style(api_url):
     return host == "ai-gw.emdlz.com.cn" or path in {"/v1", "/v1/images/edits"}
 
 
-def _size_from_image(image, request_style, size):
+def _format_size(width, height, request_style):
+    if request_style == "openai_images_edit_multipart":
+        return f"{width}x{height}"
+    return f"{width}*{height}"
+
+
+def _round_size(value):
+    return max(64, int(round(float(value) / 16) * 16))
+
+
+def _size_from_ratio(request_style, aspect_ratio, long_edge, output_width, output_height):
+    aspect_ratio = (aspect_ratio or "auto_from_input").strip()
+    long_edge = max(64, int(long_edge or 1024))
+
+    ratios = {
+        "1:1 square": (1, 1),
+        "3:4 portrait": (3, 4),
+        "4:3 landscape": (4, 3),
+        "9:16 portrait": (9, 16),
+        "16:9 landscape": (16, 9),
+        "2:3 portrait": (2, 3),
+        "3:2 landscape": (3, 2),
+    }
+
+    if aspect_ratio == "custom_width_height":
+        width = _round_size(output_width)
+        height = _round_size(output_height)
+        return _format_size(width, height, request_style)
+
+    if aspect_ratio in ratios:
+        ratio_w, ratio_h = ratios[aspect_ratio]
+        if ratio_w >= ratio_h:
+            width = _round_size(long_edge)
+            height = _round_size(long_edge * ratio_h / ratio_w)
+        else:
+            height = _round_size(long_edge)
+            width = _round_size(long_edge * ratio_w / ratio_h)
+        return _format_size(width, height, request_style)
+
+    return None
+
+
+def _size_from_image(image, request_style, size, aspect_ratio="auto_from_input", long_edge=1024, output_width=1024, output_height=1024):
+    ratio_size = _size_from_ratio(request_style, aspect_ratio, long_edge, output_width, output_height)
+    if ratio_size:
+        return ratio_size
+
     size = (size or "").strip()
     if size and size.lower() not in {"auto", "auto_from_input"}:
         return size
@@ -104,9 +150,7 @@ def _size_from_image(image, request_style, size):
     width = max(512, int(round(width * scale / 16) * 16))
     height = max(512, int(round(height * scale / 16) * 16))
 
-    if request_style == "openai_images_edit_multipart":
-        return f"{width}x{height}"
-    return f"{width}*{height}"
+    return _format_size(width, height, request_style)
 
 
 def _extract_urls_or_b64(data):
@@ -161,6 +205,23 @@ class QwenImageEditAPI:
                     {"default": "openai_images_edit_multipart"},
                 ),
                 "size": ("STRING", {"default": "auto_from_input"}),
+                "aspect_ratio": (
+                    [
+                        "auto_from_input",
+                        "1:1 square",
+                        "3:4 portrait",
+                        "4:3 landscape",
+                        "9:16 portrait",
+                        "16:9 landscape",
+                        "2:3 portrait",
+                        "3:2 landscape",
+                        "custom_width_height",
+                    ],
+                    {"default": "auto_from_input"},
+                ),
+                "output_long_edge": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 16}),
+                "output_width": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 16}),
+                "output_height": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 16}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
                 "n": ("INT", {"default": 1, "min": 1, "max": 4}),
                 "prompt_extend": ("BOOLEAN", {"default": True}),
@@ -328,6 +389,10 @@ class QwenImageEditAPI:
         api_key_or_env,
         request_style,
         size,
+        aspect_ratio,
+        output_long_edge,
+        output_width,
+        output_height,
         seed,
         n,
         prompt_extend,
@@ -340,7 +405,15 @@ class QwenImageEditAPI:
         if request_style != "openai_images_edit_multipart" and _force_openai_style(api_url):
             request_style = "openai_images_edit_multipart"
         pil_images = [_tensor_to_pil(image1), _tensor_to_pil(image2), _tensor_to_pil(image3)]
-        resolved_size = _size_from_image(image1, request_style, size)
+        resolved_size = _size_from_image(
+            image1,
+            request_style,
+            size,
+            aspect_ratio,
+            output_long_edge,
+            output_width,
+            output_height,
+        )
         seed = _normalize_seed(seed)
 
         if request_style == "openai_images_edit_multipart":

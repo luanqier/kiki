@@ -36,6 +36,33 @@ request_style = openai_images_edit_multipart
 model = qwen-image-edit-plus
 ```
 
+## Size And Aspect Ratio
+
+Use these fields to control output size:
+
+```text
+aspect_ratio = 1:1 square
+output_long_edge = 1024
+output_width = 1024
+output_height = 1024
+```
+
+Supported `aspect_ratio` presets:
+
+```text
+auto_from_input
+1:1 square
+3:4 portrait
+4:3 landscape
+9:16 portrait
+16:9 landscape
+2:3 portrait
+3:2 landscape
+custom_width_height
+```
+
+When `custom_width_height` is selected, the node uses `output_width` and `output_height`.
+
 For the API key field:
 
 ```text
